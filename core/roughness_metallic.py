@@ -270,9 +270,7 @@ def generate_roughness_metallic(
     tv_p95 = np.percentile(texture_var, 95)
     texture_detail = np.clip(texture_var / (tv_p95 + 1e-6), 0.0, 1.0)
 
-    specular = _detect_specular(rgb)
-
-    # Effective base roughness offset
+    # --- 1. Metallic Calculation ---
     effective_base_roughness = roughness_offset
     metal_prob_gate = 1.0
 
@@ -281,21 +279,6 @@ def generate_roughness_metallic(
         effective_base_roughness = ai_base_r * 0.7 + roughness_offset * 0.3
         metal_prob_gate = material_info.get('metal_prob', 1.0)
 
-    roughness_raw = (
-        ao * roughness_cavity +
-        texture_detail * roughness_texture +
-        depth_gradient * 0.15 +
-        depth_curvature * 0.10 +
-        effective_base_roughness
-    )
-
-    roughness_raw = roughness_raw * (1.0 - specular * 0.6)
-    roughness_raw = np.clip(roughness_raw, 0.0, 1.0).astype(np.float32)
-
-    final_roughness = guided_filter(guide=lum, src=roughness_raw, radius=8, eps=0.005)
-    final_roughness = np.clip(final_roughness, 0.0, 1.0).astype(np.float32)
-
-    # Metallic Calculation
     if metal_prob_gate < 0.15:
         # AI confirms non-metallic material (paper, wall, wood, plastic, ceramic, etc.)
         final_metallic = np.zeros((h, w), dtype=np.float32)
@@ -313,5 +296,23 @@ def generate_roughness_metallic(
         final_metallic = guided_filter(guide=lum, src=raw_metallic, radius=4, eps=0.02)
         final_metallic = np.clip(final_metallic, 0.0, 1.0).astype(np.float32)
         final_metallic[final_metallic < 0.15] = 0.0
+
+    # --- 2. Physically-Coupled Roughness Calculation ---
+    specular_peaks = _detect_specular_peaks(rgb, radius=15)
+
+    roughness_raw = (
+        ao * roughness_cavity +
+        texture_detail * roughness_texture +
+        depth_gradient * 0.15 +
+        depth_curvature * 0.10 +
+        effective_base_roughness
+    )
+
+    # Scale down roughness on metallic surfaces (metals are highly reflective) and polished specular peaks
+    roughness_raw = roughness_raw * (1.0 - final_metallic * 0.65) * (1.0 - specular_peaks * 0.40)
+    roughness_raw = np.clip(roughness_raw, 0.05, 1.0).astype(np.float32)
+
+    final_roughness = guided_filter(guide=lum, src=roughness_raw, radius=8, eps=0.005)
+    final_roughness = np.clip(final_roughness, 0.05, 1.0).astype(np.float32)
 
     return final_roughness, final_metallic
