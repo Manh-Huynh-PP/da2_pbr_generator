@@ -1,6 +1,6 @@
 schema_version = "1.0.0"
 id = "da2_pbr_generator"
-version = "1.0.0"
+version = "1.0.1"
 name = "DA2 + PBR texture Generator from Image"
 tagline = "AI Depth & Full PBR Material Map Generator (Albedo, Normal, Roughness, Metallic) from a single 2D image"
 maintainer = "Manh Huynh"

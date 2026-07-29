@@ -423,7 +423,7 @@ class DA2_OT_download_material_model(bpy.types.Operator):
         prefs = context.preferences.addons[__package__].preferences
         model_dir = get_user_data_path(subfolder="models", create=True)
         dest_path = os.path.join(model_dir, "minc_materials_23.onnx")
-        url = "https://github.com/Manh-Huynh-PP/da2_pbr_generator/releases/download/v1.0.0/minc_materials_23_matmul.onnx"
+        url = "https://huggingface.co/manhhuynhsd/Minc-Materials-23-ONNX/resolve/main/model_quantized.onnx"
 
         self._download_done = False
         self._download_error = None
