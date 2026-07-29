@@ -101,47 +101,56 @@ def _compute_metallic_advanced(rgb: np.ndarray, depth: np.ndarray,
                                 metallic_sensitivity: float = 0.50,
                                 metallic_shadow_fill: float = 0.85,
                                 metallic_pattern_boost: float = 0.90) -> np.ndarray:
-    """Advanced Metallic Detection using RGB Color Heuristics + Surface Normal Pattern Analysis + Shadow Hole Filling."""
+    """Advanced Metallic Detection supporting Gold, Copper, Brass & Achromatic Metals, with White Diffuse Marble Suppression."""
     h, w = depth.shape
-    lum = 0.299 * rgb[..., 0] + 0.587 * rgb[..., 1] + 0.114 * rgb[..., 2]
+    r, g, b = rgb[..., 0], rgb[..., 1], rgb[..., 2]
+    lum = 0.299 * r + 0.587 * g + 0.114 * b
 
     c_max = np.max(rgb, axis=-1)
     c_min = np.min(rgb, axis=-1)
     sat = np.where(c_max > 1e-6, (c_max - c_min) / (c_max + 1e-6), 0.0)
 
-    # --- 1. Color/Reflectance Scores (Shadow-Aware) ---
-    achromatic_mask = np.clip(1.0 - sat * (2.0 + metallic_sensitivity * 3.0), 0.0, 1.0)
-    luminance_gate = np.clip((lum - 0.05) / (0.15 + (1.0 - metallic_sensitivity) * 0.3), 0.0, 1.0)
-    chrome_score = achromatic_mask * luminance_gate
+    # --- 1. Colored Metal Detection (Gold, Brass, Copper, Bronze) ---
+    # Gold & Yellow-Brass: R > G, G > B, Saturation > 0.12, R > 0.35
+    gold_hue_score = (
+        np.clip((r - b) * 2.5, 0.0, 1.0) *
+        np.clip((g - b) * 3.0, 0.0, 1.0) *
+        np.clip(sat * 3.0, 0.0, 1.0)
+    )
+    gold_lum_score = np.clip((lum - 0.12) / 0.25, 0.0, 1.0)
+    gold_metallic = gold_hue_score * gold_lum_score
 
-    # --- 1b. Diffuse White Non-Metal Penalty (Wall, Paper, Ceramic, White Plastic) ---
-    # Non-metallic white surfaces have uniform high luminance across a wide area with very low local variance.
-    # Metallic white/chrome reflects environment gradients or localized specular peaks.
+    # Copper & Reddish-Bronze: R > G, R > B, Saturation > 0.18
+    copper_hue_score = (
+        np.clip((r - g) * 3.0, 0.0, 1.0) *
+        np.clip((r - b) * 2.0, 0.0, 1.0) *
+        np.clip(sat * 2.5, 0.0, 1.0)
+    )
+    copper_metallic = copper_hue_score * gold_lum_score
+
+    warm_metal_score = np.maximum(gold_metallic * 1.25, copper_metallic * 1.25)
+
+    # --- 2. Achromatic Metal Detection (Silver, Chrome, Steel, Iron) ---
+    achromatic_mask = np.clip(1.0 - sat * 3.5, 0.0, 1.0)
+    specular_peaks = _detect_specular_peaks(rgb, radius=15)
+    luminance_gate = np.clip((lum - 0.20) / (0.20 + (1.0 - metallic_sensitivity) * 0.3), 0.0, 1.0)
+
+    # Achromatic metals require specular highlights or environment reflection peaks
+    chrome_score = achromatic_mask * luminance_gate * specular_peaks
+
+    # --- 3. Diffuse Non-Metal Penalty (Marble, Ceramic, Paper, Plaster, Wall) ---
+    # Non-metallic white surfaces have uniform high luminance with low local specular contrast and low saturation.
     lum_mean_large = _box_filter(lum, radius=15)
     lum_std_large = _local_std(lum, radius=15)
 
     diffuse_white_flatness = (
-        np.clip((lum_mean_large - 0.50) / 0.35, 0.0, 1.0) *
+        np.clip((lum_mean_large - 0.45) / 0.35, 0.0, 1.0) *
         np.clip(1.0 - lum_std_large * 8.0, 0.0, 1.0) *
-        np.clip(1.0 - sat * 4.0, 0.0, 1.0)
+        np.clip(1.0 - sat * 3.5, 0.0, 1.0)
     )
+    diffuse_white_penalty = np.clip(diffuse_white_flatness * (1.0 - specular_peaks * 0.90), 0.0, 1.0)
 
-    specular_peaks = _detect_specular_peaks(rgb, radius=15)
-    diffuse_white_penalty = np.clip(diffuse_white_flatness * (1.0 - specular_peaks * 0.85), 0.0, 1.0)
-
-    # Suppress chrome score for uniform diffuse white non-metals
-    chrome_score = chrome_score * (1.0 - diffuse_white_penalty * 0.98)
-
-    r, g, b = rgb[..., 0], rgb[..., 1], rgb[..., 2]
-    warm_metal = (
-        np.clip((r - g) * 3.0, 0.0, 1.0) *
-        np.clip((g - b) * 3.0, 0.0, 1.0) *
-        np.clip((lum - 0.10) / 0.35, 0.0, 1.0) *
-        np.clip(sat * 2.5, 0.0, 1.0)
-    )
-    base_metallic_color = np.maximum(chrome_score, warm_metal * 0.85)
-
-    # --- 2. Surface Normal Map & Structure Tensor Analysis ---
+    # --- 4. Surface Normal Map & Structure Tensor Analysis ---
     dx = (np.roll(depth, -1, axis=1) - np.roll(depth, 1, axis=1)) * 3.5 + \
          (np.roll(lum, -1, axis=1) - np.roll(lum, 1, axis=1)) * 0.8
     dy = (np.roll(depth, -1, axis=0) - np.roll(depth, 1, axis=0)) * 3.5 + \
@@ -158,35 +167,40 @@ def _compute_metallic_advanced(rgb: np.ndarray, depth: np.ndarray,
     lambda2 = trace * 0.5 - diff
 
     anisotropy = np.clip((lambda1 - lambda2) / (lambda1 + lambda2 + 1e-6), 0.0, 1.0)
-
     grad_norm = np.sqrt(dx * dx + dy * dy)
-    grad_norm_smooth = _box_filter(grad_norm, radius=7)
-    normal_smoothness = np.exp(-grad_norm_smooth * 2.0)
-
+    normal_smoothness = np.exp(-_box_filter(grad_norm, radius=7) * 2.0)
     organic_noise = np.clip(_box_filter(lambda2, radius=7) * 4.0, 0.0, 1.0)
 
-    # --- 3. Pattern Confidence Combination ---
+    # --- 5. Pattern & Score Combination ---
     brushed_pattern = anisotropy * luminance_gate * achromatic_mask
-    polished_pattern = normal_smoothness * base_metallic_color
+    base_metallic_color = np.maximum(chrome_score, warm_metal_score)
 
+    polished_pattern = normal_smoothness * base_metallic_color
     pattern_boost = np.maximum(polished_pattern, brushed_pattern * metallic_pattern_boost)
-    metallic_raw = np.maximum(base_metallic_color * 0.6, pattern_boost)
+
+    metallic_raw = np.maximum(base_metallic_color, pattern_boost)
 
     # Suppress non-metallic organic textures (wood/fabric/stone)
     metallic_raw = metallic_raw * (1.0 - organic_noise * 0.85)
 
-    # Suppress non-metal diffuse white areas (unless protected by brushed metal anisotropy)
-    metallic_raw = metallic_raw * (1.0 - diffuse_white_penalty * (1.0 - anisotropy * 0.8))
+    # Hard-suppress diffuse white non-metals (unless gold/copper or brushed metal)
+    is_colored_metal = (warm_metal_score > 0.20)
+    metallic_raw = np.where(is_colored_metal, metallic_raw, metallic_raw * (1.0 - diffuse_white_penalty * 0.98))
 
-    # --- 4. Morphological Hole Filling for Shadow Gradients ---
+    # --- 6. Morphological Hole Filling for Shadow Gradients ---
     if metallic_shadow_fill > 0:
         metallic_dilated = _box_filter(metallic_raw, radius=21)
-        shadow_fill_mask = (metallic_dilated > 0.20) & (sat < 0.35) & (organic_noise < 0.45) & (lum > 0.05) & (diffuse_white_penalty < 0.40)
+        shadow_fill_mask = (
+            (metallic_dilated > 0.15) &
+            (organic_noise < 0.45) &
+            (lum > 0.05) &
+            (diffuse_white_penalty < 0.50)
+        )
         final_metallic = np.where(shadow_fill_mask, np.maximum(metallic_raw, metallic_dilated * metallic_shadow_fill), metallic_raw)
     else:
         final_metallic = metallic_raw
 
-    final_metallic = _gaussian_blur_2d(final_metallic.astype(np.float32), sigma=2.0)
+    final_metallic = _gaussian_blur_2d(final_metallic.astype(np.float32), sigma=1.5)
     return np.clip(final_metallic, 0.0, 1.0).astype(np.float32)
 
 
