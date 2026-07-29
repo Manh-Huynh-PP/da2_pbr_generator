@@ -1,0 +1,30 @@
+schema_version = "1.0.0"
+id = "da2_pbr_generator"
+version = "2.0.0"
+name = "DA2 + PBR texture Generator from Image"
+tagline = "AI Depth & Full PBR Material Map Generator (Albedo, Normal, Roughness, Metallic) from a single 2D image"
+maintainer = "Manh Huynh"
+type = "add-on"
+blender_version_min = "4.2.0"
+license = ["SPDX:MIT"]
+tags = ["Material", "3D View", "Import-Export"]
+
+wheels = [
+    "./wheels/onnxruntime-1.28.0-cp313-cp313-win_amd64.whl",
+    "./wheels/pillow-12.3.0-cp313-cp313-win_amd64.whl",
+    "./wheels/numpy-2.5.1-cp313-cp313-win_amd64.whl",
+    "./wheels/onnxruntime-1.20.1-cp311-cp311-win_amd64.whl",
+    "./wheels/pillow-11.1.0-cp311-cp311-win_amd64.whl",
+    "./wheels/numpy-2.4.6-cp311-cp311-win_amd64.whl",
+    "./wheels/coloredlogs-15.0.1-py2.py3-none-any.whl",
+    "./wheels/flatbuffers-25.12.19-py2.py3-none-any.whl",
+    "./wheels/humanfriendly-10.0-py2.py3-none-any.whl",
+    "./wheels/packaging-26.2-py3-none-any.whl",
+    "./wheels/protobuf-7.35.1-cp310-abi3-win_amd64.whl",
+    "./wheels/sympy-1.14.0-py3-none-any.whl",
+    "./wheels/mpmath-1.3.0-py3-none-any.whl",
+]
+
+[permissions]
+network = "Required to download Depth Anything V2 model weights from HuggingFace"
+files = "Required to read input images/videos and save generated PBR maps"
