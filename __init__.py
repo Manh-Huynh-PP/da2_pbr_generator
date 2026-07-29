@@ -8,7 +8,7 @@
 bl_info = {
     "name": "DA2 + PBR texture Generator from Image",
     "author": "Manh Huynh",
-    "version": (2, 0, 0),
+    "version": (1, 0, 0),
     "blender": (4, 0, 0),
     "location": "3D View > Sidebar > DA2 Depth Tab",
     "description": "Generates high-precision Depth maps and full PBR material maps (Albedo, Normal, Roughness, Metallic) from a single 2D image using Depth Anything V2 AI and physics-based surface texture analysis.",
