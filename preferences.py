@@ -85,6 +85,19 @@ def find_existing_model_file(filename: str, min_bytes: int = 10 * 1024 * 1024) -
     return None
 
 
+def force_ui_redraw(context):
+    """Trigger redraw of 3D View and Preferences areas so UI immediately reflects model status changes."""
+    try:
+        if hasattr(context, "window_manager") and context.window_manager:
+            for window in context.window_manager.windows:
+                if window.screen:
+                    for area in window.screen.areas:
+                        if area.type in ('VIEW_3D', 'PREFERENCES'):
+                            area.tag_redraw()
+    except Exception:
+        pass
+
+
 def remove_all_downloaded_models():
     """Remove downloaded model files."""
     try:
@@ -123,7 +136,7 @@ class DA2_OT_remove_model(bpy.types.Operator):
                 self.report({'ERROR'}, f"Failed to remove model: {e}")
                 return {'CANCELLED'}
 
-        prefs._cached_model_status = None
+        force_ui_redraw(context)
         if removed:
             self.report({'INFO'}, "Downloaded model removed successfully.")
         else:
@@ -157,12 +170,8 @@ class DA2_OT_download_model(bpy.types.Operator):
 
             if self._download_done:
                 self._cleanup_timer(context)
-
-                try:
-                    prefs = context.preferences.addons[__package__].preferences
-                    prefs._cached_model_status = None
-                except Exception:
-                    pass
+                wm.da2_progress = 0.0
+                force_ui_redraw(context)
 
                 if self._download_error:
                     self.report({'ERROR'}, f"Download failed: {self._download_error}")
@@ -260,7 +269,7 @@ class DA2Preferences(bpy.types.AddonPreferences):
     bl_idname = __package__
 
     def _on_variant_change(self, context):
-        self._cached_model_status = None
+        force_ui_redraw(context)
 
     model_variant: EnumProperty(
         name="Model Variant",
@@ -283,9 +292,6 @@ class DA2Preferences(bpy.types.AddonPreferences):
         default='AUTO',
     )
 
-    _cached_model_status = None
-    _cached_variant_key = None
-
     def get_model_path(self) -> str:
         filename = f"depth_anything_v2_{self.model_variant.lower()}.onnx"
         existing = find_existing_model_file(filename, min_bytes=10 * 1024 * 1024)
@@ -295,15 +301,8 @@ class DA2Preferences(bpy.types.AddonPreferences):
         return os.path.join(model_dir, filename)
 
     def is_model_downloaded(self) -> bool:
-        key = self.model_variant
-        if self._cached_variant_key == key and self._cached_model_status is not None:
-            return self._cached_model_status
-
         path = self.get_model_path()
-        status = os.path.exists(path) and os.path.getsize(path) > 10 * 1024 * 1024
-        DA2Preferences._cached_variant_key = key
-        DA2Preferences._cached_model_status = status
-        return status
+        return os.path.exists(path) and os.path.getsize(path) > 10 * 1024 * 1024
 
     def draw(self, context):
         layout = self.layout
