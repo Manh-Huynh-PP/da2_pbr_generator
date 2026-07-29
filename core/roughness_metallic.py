@@ -60,6 +60,26 @@ def _detect_specular(rgb: np.ndarray) -> np.ndarray:
     return np.clip(specular, 0.0, 1.0).astype(np.float32)
 
 
+def _detect_specular_peaks(rgb: np.ndarray, radius: int = 15) -> np.ndarray:
+    """Detect true local specular peaks — bright spots that stand out from surrounding background.
+
+    A flat white wall/paper is bright everywhere (no local peak).
+    A specular highlight on a metal surface is locally much brighter than its surroundings.
+    """
+    lum = 0.299 * rgb[..., 0] + 0.587 * rgb[..., 1] + 0.114 * rgb[..., 2]
+    c_max = np.max(rgb, axis=-1)
+    c_min = np.min(rgb, axis=-1)
+    sat = np.where(c_max > 1e-6, (c_max - c_min) / (c_max + 1e-6), 0.0)
+
+    local_lum_mean = _box_filter(lum, radius=radius)
+    specular_contrast = np.clip((lum - local_lum_mean) * 4.0, 0.0, 1.0)
+
+    bright_mask = np.clip((lum - 0.50) / 0.30, 0.0, 1.0)
+    low_sat_mask = np.clip(1.0 - sat * 3.0, 0.0, 1.0)
+
+    return np.clip(bright_mask * low_sat_mask * specular_contrast, 0.0, 1.0).astype(np.float32)
+
+
 def _compute_ambient_occlusion(depth: np.ndarray, radius: int = 9) -> np.ndarray:
     """Approximate screen-space ambient occlusion from depth map.
 
@@ -93,6 +113,24 @@ def _compute_metallic_advanced(rgb: np.ndarray, depth: np.ndarray,
     achromatic_mask = np.clip(1.0 - sat * (2.0 + metallic_sensitivity * 3.0), 0.0, 1.0)
     luminance_gate = np.clip((lum - 0.05) / (0.15 + (1.0 - metallic_sensitivity) * 0.3), 0.0, 1.0)
     chrome_score = achromatic_mask * luminance_gate
+
+    # --- 1b. Diffuse White Non-Metal Penalty (Wall, Paper, Ceramic, White Plastic) ---
+    # Non-metallic white surfaces have uniform high luminance across a wide area with very low local variance.
+    # Metallic white/chrome reflects environment gradients or localized specular peaks.
+    lum_mean_large = _box_filter(lum, radius=15)
+    lum_std_large = _local_std(lum, radius=15)
+
+    diffuse_white_flatness = (
+        np.clip((lum_mean_large - 0.50) / 0.35, 0.0, 1.0) *
+        np.clip(1.0 - lum_std_large * 8.0, 0.0, 1.0) *
+        np.clip(1.0 - sat * 4.0, 0.0, 1.0)
+    )
+
+    specular_peaks = _detect_specular_peaks(rgb, radius=15)
+    diffuse_white_penalty = np.clip(diffuse_white_flatness * (1.0 - specular_peaks * 0.85), 0.0, 1.0)
+
+    # Suppress chrome score for uniform diffuse white non-metals
+    chrome_score = chrome_score * (1.0 - diffuse_white_penalty * 0.98)
 
     r, g, b = rgb[..., 0], rgb[..., 1], rgb[..., 2]
     warm_metal = (
@@ -137,10 +175,13 @@ def _compute_metallic_advanced(rgb: np.ndarray, depth: np.ndarray,
     # Suppress non-metallic organic textures (wood/fabric/stone)
     metallic_raw = metallic_raw * (1.0 - organic_noise * 0.85)
 
+    # Suppress non-metal diffuse white areas (unless protected by brushed metal anisotropy)
+    metallic_raw = metallic_raw * (1.0 - diffuse_white_penalty * (1.0 - anisotropy * 0.8))
+
     # --- 4. Morphological Hole Filling for Shadow Gradients ---
     if metallic_shadow_fill > 0:
         metallic_dilated = _box_filter(metallic_raw, radius=21)
-        shadow_fill_mask = (metallic_dilated > 0.20) & (sat < 0.35) & (organic_noise < 0.45) & (lum > 0.05)
+        shadow_fill_mask = (metallic_dilated > 0.20) & (sat < 0.35) & (organic_noise < 0.45) & (lum > 0.05) & (diffuse_white_penalty < 0.40)
         final_metallic = np.where(shadow_fill_mask, np.maximum(metallic_raw, metallic_dilated * metallic_shadow_fill), metallic_raw)
     else:
         final_metallic = metallic_raw
