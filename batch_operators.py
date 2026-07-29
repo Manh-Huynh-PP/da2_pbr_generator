@@ -5,7 +5,6 @@ import traceback
 
 import bpy
 from .core.depth_estimator import DepthEstimator
-from .core.clipseg_material import CLIPSegMaterial
 from .core.normal_map import generate_hybrid_normal
 from .core.roughness_metallic import generate_roughness_metallic
 from .core.albedo_map import generate_albedo_map
