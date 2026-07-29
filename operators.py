@@ -6,6 +6,7 @@ import traceback
 import bpy
 import mathutils
 from .core.depth_estimator import DepthEstimator
+from .core.material_classifier import MaterialClassifier
 from .core.normal_map import generate_hybrid_normal
 from .core.roughness_metallic import generate_roughness_metallic
 from .core.albedo_map import generate_albedo_map
@@ -361,6 +362,9 @@ class DA2_OT_generate_depth(bpy.types.Operator):
         metallic_sensitivity = props.metallic_sensitivity
         metallic_shadow_fill = props.metallic_shadow_fill
         metallic_pattern_boost = props.metallic_pattern_boost
+        use_ai_material_classifier = props.use_ai_material_classifier
+        is_mat_model_ready = prefs.is_material_model_downloaded()
+        mat_model_path = prefs.get_material_model_path()
         input_basename = os.path.basename(filepath)
 
         # Reset state
@@ -437,8 +441,20 @@ class DA2_OT_generate_depth(bpy.types.Operator):
                 if generate_roughness or generate_metallic:
                     self._status_msg = "Calculating Roughness & Metallic maps..."
                     self._progress = 85.0
+
+                    material_info = None
+                    if use_ai_material_classifier and is_mat_model_ready:
+                        try:
+                            self._status_msg = "Classifying material (MINC-23 AI)..."
+                            MaterialClassifier.load_model(mat_model_path, use_gpu=use_gpu)
+                            material_info = MaterialClassifier.predict_material(rgb)
+                            print(f"[DA2 PBR Generator] AI Material: {material_info['top_class']} ({material_info['top_prob']*100:.1f}%)")
+                        except Exception as e:
+                            print(f"[DA2 PBR Generator] Material classification error: {e}")
+
                     r_map, m_map = generate_roughness_metallic(
                         rgb, self._result_depth,
+                        material_info=material_info,
                         roughness_offset=roughness_offset,
                         roughness_cavity=roughness_cavity,
                         roughness_texture=roughness_texture,

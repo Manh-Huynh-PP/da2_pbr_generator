@@ -54,6 +54,12 @@ class DA2_PT_main_panel(bpy.types.Panel):
             box_step1.separator()
 
         box_step1.prop(props, "apply_plane_fix")
+        box_step1.prop(props, "use_ai_material_classifier")
+
+        if props.use_ai_material_classifier and not prefs.is_material_model_downloaded():
+            box_mat_warn = box_step1.box()
+            box_mat_warn.label(text="MINC-23 AI Model Not Downloaded", icon='INFO')
+            box_mat_warn.operator("da2.download_material_model", text="Download Material Model", icon='IMPORT')
 
         # PBR Maps Checkboxes with Collapsible Fine-Tuning Sliders
         col_maps = box_step1.column(align=True)

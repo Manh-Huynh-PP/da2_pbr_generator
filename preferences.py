@@ -338,6 +338,17 @@ class DA2Preferences(bpy.types.AddonPreferences):
         if hw_note:
             box.label(text=f"Requirements: {hw_note}", icon='SYSTEM')
 
+        # Material AI Model Management
+        box_mat = layout.box()
+        box_mat.label(text="AI Material Recognition (MINC-23)", icon='NODE_MATERIAL')
+        is_mat_ready = self.is_material_model_downloaded()
+        row_m = box_mat.row()
+        if is_mat_ready:
+            row_m.label(text="Material Classifier Ready (minc_materials_23.onnx)", icon='CHECKMARK')
+        else:
+            row_m.label(text="MINC-23 Classifier Weights Not Downloaded", icon='ERROR')
+            row_m.operator("da2.download_material_model", text="Download Material Model", icon='IMPORT')
+
         # Credits & License Box
         box_cred = layout.box()
         box_cred.label(text="Credits & License", icon='HELP')
@@ -345,7 +356,125 @@ class DA2Preferences(bpy.types.AddonPreferences):
         col_cred.label(text="Addon: DA2 + PBR texture Generator from Image")
         col_cred.label(text="Author: Manh Huynh")
         col_cred.label(text="License: MIT License (Open Source)")
-        col_cred.label(text="Core AI Model: Depth Anything V2 (HKU / ByteDance)")
+        col_cred.label(text="Core AI Models: Depth Anything V2 + MINC-23 Material Classifier")
+
+    def get_material_model_path(self) -> str:
+        filename = "minc_materials_23.onnx"
+        existing = find_existing_model_file(filename, min_bytes=10 * 1024 * 1024)
+        if existing:
+            return existing
+        model_dir = get_user_data_path(subfolder="models", create=False)
+        return os.path.join(model_dir, filename)
+
+    def is_material_model_downloaded(self) -> bool:
+        path = self.get_material_model_path()
+        return os.path.exists(path) and os.path.getsize(path) > 10 * 1024 * 1024
+
+
+# ---------------------------------------------------------------------------
+# Operator: Download Material Classifier Model
+# ---------------------------------------------------------------------------
+class DA2_OT_download_material_model(bpy.types.Operator):
+    bl_idname = "da2.download_material_model"
+    bl_label = "Download MINC-23 Material Model"
+    bl_description = "Download MINC-23 AI Material Recognition ONNX model weights"
+
+    _timer = None
+    _thread = None
+    _download_progress = 0.0
+    _download_done = False
+    _download_error = None
+
+    def modal(self, context, event):
+        wm = context.window_manager
+        if context.area:
+            context.area.tag_redraw()
+
+        if event.type == 'TIMER':
+            wm.da2_progress = self._download_progress
+            if self._download_done:
+                self._cleanup_timer(context)
+                wm.da2_progress = 0.0
+                force_ui_redraw(context)
+
+                if self._download_error:
+                    self.report({'ERROR'}, f"Material model download failed: {self._download_error}")
+                    return {'CANCELLED'}
+                else:
+                    self.report({'INFO'}, "Material AI model downloaded successfully!")
+                    return {'FINISHED'}
+
+        return {'PASS_THROUGH'}
+
+    def _cleanup_timer(self, context):
+        wm = context.window_manager
+        if self._timer:
+            wm.event_timer_remove(self._timer)
+            self._timer = None
+
+    def execute(self, context):
+        return self.invoke(context, None)
+
+    def invoke(self, context, event):
+        if hasattr(bpy.app, 'online_access') and not bpy.app.online_access:
+            self.report({'ERROR'}, "Please enable 'Allow Online Access' in Blender Preferences > System.")
+            return {'CANCELLED'}
+
+        prefs = context.preferences.addons[__package__].preferences
+        model_dir = get_user_data_path(subfolder="models", create=True)
+        dest_path = os.path.join(model_dir, "minc_materials_23.onnx")
+        url = "https://github.com/Manh-Huynh-PP/da2_pbr_generator/releases/download/v1.0.0/minc_materials_23_matmul.onnx"
+
+        self._download_done = False
+        self._download_error = None
+        self._download_progress = 0.0
+
+        def _download_worker():
+            try:
+                ctx = ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+
+                req = urllib.request.Request(
+                    url,
+                    headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'},
+                )
+
+                with urllib.request.urlopen(req, context=ctx, timeout=60) as response:
+                    total_size = int(response.info().get('Content-Length', 0))
+                    downloaded = 0
+                    block_size = 256 * 1024
+
+                    temp_path = dest_path + ".tmp"
+                    with open(temp_path, 'wb') as f:
+                        while True:
+                            buffer = response.read(block_size)
+                            if not buffer:
+                                break
+                            f.write(buffer)
+                            downloaded += len(buffer)
+                            if total_size > 0:
+                                self._download_progress = (downloaded / total_size) * 100.0
+
+                    if os.path.exists(dest_path):
+                        os.remove(dest_path)
+                    os.rename(temp_path, dest_path)
+                    self._download_progress = 100.0
+
+            except Exception as e:
+                self._download_error = str(e)
+                traceback.print_exc()
+            finally:
+                self._download_done = True
+
+        wm = context.window_manager
+        self._timer = wm.event_timer_add(0.2, window=context.window)
+        wm.modal_handler_add(self)
+
+        self._thread = threading.Thread(target=_download_worker, daemon=True)
+        self._thread.start()
+
+        return {'RUNNING_MODAL'}
 
 
 # ---------------------------------------------------------------------------
@@ -353,6 +482,7 @@ class DA2Preferences(bpy.types.AddonPreferences):
 # ---------------------------------------------------------------------------
 def register():
     bpy.utils.register_class(DA2_OT_download_model)
+    bpy.utils.register_class(DA2_OT_download_material_model)
     bpy.utils.register_class(DA2_OT_remove_model)
     bpy.utils.register_class(DA2Preferences)
 
@@ -361,9 +491,12 @@ def unregister():
     try:
         from .core.depth_estimator import DepthEstimator
         DepthEstimator.release()
+        from .core.material_classifier import MaterialClassifier
+        MaterialClassifier.release()
     except Exception:
         pass
 
     bpy.utils.unregister_class(DA2Preferences)
     bpy.utils.unregister_class(DA2_OT_remove_model)
+    bpy.utils.unregister_class(DA2_OT_download_material_model)
     bpy.utils.unregister_class(DA2_OT_download_model)

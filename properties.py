@@ -155,6 +155,12 @@ class DA2Properties(bpy.types.PropertyGroup):
         max=1.0,
     )
 
+    use_ai_material_classifier: BoolProperty(
+        name="AI Material Recognition",
+        description="Use MINC-23 AI Model to classify material type and optimize Metallic/Roughness maps",
+        default=True,
+    )
+
     # Collapsible UI fold toggles (default False = collapsed)
     show_albedo_tuning: BoolProperty(name="Fine-Tune Albedo", default=False)
     show_normal_tuning: BoolProperty(name="Fine-Tune Normal", default=False)

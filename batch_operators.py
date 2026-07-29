@@ -5,6 +5,7 @@ import traceback
 
 import bpy
 from .core.depth_estimator import DepthEstimator
+from .core.material_classifier import MaterialClassifier
 from .core.normal_map import generate_hybrid_normal
 from .core.roughness_metallic import generate_roughness_metallic
 from .core.albedo_map import generate_albedo_map
@@ -136,9 +137,10 @@ class DA2_OT_batch_process(bpy.types.Operator):
         roughness_offset = props.roughness_offset
         roughness_cavity = props.roughness_cavity
         roughness_texture = props.roughness_texture
-        metallic_sensitivity = props.metallic_sensitivity
-        metallic_shadow_fill = props.metallic_shadow_fill
         metallic_pattern_boost = props.metallic_pattern_boost
+        use_ai_material_classifier = props.use_ai_material_classifier
+        is_mat_model_ready = prefs.is_material_model_downloaded()
+        mat_model_path = prefs.get_material_model_path()
         out_fmt = props.output_format
         out_dir_setting = props.output_directory
         video_path_for_worker = props.input_filepath if mode == 'VIDEO' else None
@@ -249,8 +251,17 @@ class DA2_OT_batch_process(bpy.types.Operator):
                                 normal_to_png(normal, normal_path)
 
                         if generate_roughness or generate_metallic:
+                            material_info = None
+                            if use_ai_material_classifier and is_mat_model_ready:
+                                try:
+                                    MaterialClassifier.load_model(mat_model_path, use_gpu=use_gpu)
+                                    material_info = MaterialClassifier.predict_material(rgb)
+                                except Exception as e:
+                                    print(f"[DA2 Batch] Material classifier error: {e}")
+
                             r_map, m_map = generate_roughness_metallic(
                                 rgb, depth,
+                                material_info=material_info,
                                 roughness_offset=roughness_offset,
                                 roughness_cavity=roughness_cavity,
                                 roughness_texture=roughness_texture,

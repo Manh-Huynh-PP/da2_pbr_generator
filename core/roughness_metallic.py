@@ -195,8 +195,7 @@ def generate_roughness_metallic(
     depth: np.ndarray,
     labels: Optional[np.ndarray] = None,
     region_materials: Optional[Dict[int, dict]] = None,
-    clipseg_roughness: Optional[np.ndarray] = None,
-    clipseg_metallic: Optional[np.ndarray] = None,
+    material_info: Optional[dict] = None,
     roughness_offset: float = 0.20,
     roughness_cavity: float = 0.30,
     roughness_texture: float = 0.25,
@@ -204,7 +203,7 @@ def generate_roughness_metallic(
     metallic_shadow_fill: float = 0.85,
     metallic_pattern_boost: float = 0.90,
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """Generate Roughness and Metallic maps from RGB + DA2 Depth."""
+    """Generate Roughness and Metallic maps from RGB + DA2 Depth, optionally driven by AI MaterialClassifier."""
     h, w = depth.shape
     lum = 0.299 * rgb[..., 0] + 0.587 * rgb[..., 1] + 0.114 * rgb[..., 2]
 
@@ -241,7 +240,7 @@ def generate_roughness_metallic(
 
         return final_roughness, final_metallic
 
-    # --- Mode B/C: Physics-based from RGB + Depth ---
+    # --- Physics-based + AI Material Classifier ---
     ao = _compute_ambient_occlusion(depth, radius=9)
 
     gy = np.abs(np.diff(depth, axis=0, prepend=depth[:1, :]))
@@ -259,12 +258,21 @@ def generate_roughness_metallic(
 
     specular = _detect_specular(rgb)
 
+    # Effective base roughness offset
+    effective_base_roughness = roughness_offset
+    metal_prob_gate = 1.0
+
+    if material_info is not None:
+        ai_base_r = material_info.get('base_roughness', roughness_offset)
+        effective_base_roughness = ai_base_r * 0.7 + roughness_offset * 0.3
+        metal_prob_gate = material_info.get('metal_prob', 1.0)
+
     roughness_raw = (
         ao * roughness_cavity +
         texture_detail * roughness_texture +
         depth_gradient * 0.15 +
         depth_curvature * 0.10 +
-        roughness_offset
+        effective_base_roughness
     )
 
     roughness_raw = roughness_raw * (1.0 - specular * 0.6)
@@ -273,14 +281,23 @@ def generate_roughness_metallic(
     final_roughness = guided_filter(guide=lum, src=roughness_raw, radius=8, eps=0.005)
     final_roughness = np.clip(final_roughness, 0.0, 1.0).astype(np.float32)
 
-    raw_metallic = _compute_metallic_advanced(
-        rgb, depth,
-        metallic_sensitivity=metallic_sensitivity,
-        metallic_shadow_fill=metallic_shadow_fill,
-        metallic_pattern_boost=metallic_pattern_boost,
-    )
-    final_metallic = guided_filter(guide=lum, src=raw_metallic, radius=4, eps=0.02)
-    final_metallic = np.clip(final_metallic, 0.0, 1.0).astype(np.float32)
-    final_metallic[final_metallic < 0.15] = 0.0
+    # Metallic Calculation
+    if metal_prob_gate < 0.15:
+        # AI confirms non-metallic material (paper, wall, wood, plastic, ceramic, etc.)
+        final_metallic = np.zeros((h, w), dtype=np.float32)
+    else:
+        raw_metallic = _compute_metallic_advanced(
+            rgb, depth,
+            metallic_sensitivity=metallic_sensitivity,
+            metallic_shadow_fill=metallic_shadow_fill,
+            metallic_pattern_boost=metallic_pattern_boost,
+        )
+        if metal_prob_gate < 0.60:
+            # Scale down metallic confidence if AI detects low metal probability
+            raw_metallic = raw_metallic * (metal_prob_gate / 0.60)
+
+        final_metallic = guided_filter(guide=lum, src=raw_metallic, radius=4, eps=0.02)
+        final_metallic = np.clip(final_metallic, 0.0, 1.0).astype(np.float32)
+        final_metallic[final_metallic < 0.15] = 0.0
 
     return final_roughness, final_metallic
